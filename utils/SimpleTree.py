@@ -1,9 +1,18 @@
 import pdb
 import re
 from lark import Lark, Transformer
+
 symmetric_operators = ["&", "|"]
-binary_operators = ["&", "|", "U","->"]
+zeroary_operators = ["⊥"]
+binary_operators = ["&", "|", "U", "R"]
 unary_operators = ["X", "F", "G", "!"]
+unary_operators.extend("G≤"+str(t) for t in range(100))
+unary_operators.extend("G>"+str(t) for t in range(100))
+unary_operators.extend("F≤"+str(t) for t in range(100))
+binary_operators.extend("U≤"+str(t) for t in range(100))
+binary_operators.extend("R≤"+str(t) for t in range(100))
+binary_operators.extend("R>"+str(t) for t in range(100))
+
 class SimpleTree:
     def __init__(self, label = "dummy"):
         self.left = None
@@ -236,6 +245,8 @@ class Formula(SimpleTree):
             lb = "("
             rb = ")"
         if self._isLeaf():
+            return self.label
+        if self.label in zeroary_operators:
             return self.label
         if self.label in unary_operators:
             return lb + self.label +" "+ self.left.prettyPrint() + rb

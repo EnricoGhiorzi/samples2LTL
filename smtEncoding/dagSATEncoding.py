@@ -13,24 +13,37 @@ class DagSATEncoding:
     """
     def __init__(self, D, testTraces): 
         
-        defaultOperators = ['G', 'F', '!', 'U', '&','|', '->', 'X']
-        unary = ['G', 'F', '!', 'X']
-        binary = ['&', '|', 'U', '->']
+        # Compute (maximum) length of traces
+        time_length = 0;
+        for trace in testTraces.acceptedTraces + testTraces.rejectedTraces:
+            if trace.lengthOfTrace > time_length:
+                time_length = trace.lengthOfTrace
+
+        # Add parametrized operators
+        self.listOfOperators = ['⊥', '!', '&','|', 'X', 'G', 'R']
+        self.zeroaryOperators = ['⊥']
+        self.unaryOperators = ['G', '!', 'X']
+        self.binaryOperators = ['&', '|', 'R']
+        for t in range(0, time_length):
+            self.listOfOperators.extend(['G≤'+str(t), 'G>'+str(t), 'U≤'+str(t), 'F≤'+str(t), 'R≤'+str(t), 'R>'+str(t)])
+            self.unaryOperators.extend(['G≤'+str(t), 'G>'+str(t), 'F≤'+str(t)])
+            self.binaryOperators.extend(['U≤'+str(t), 'R≤'+str(t), 'R>'+str(t)])
+
         #except for the operators, the nodes of the "syntax table" are additionally the propositional variables 
-        
-        if testTraces.operators == None:
-            self.listOfOperators = defaultOperators
-        else:
-            self.listOfOperators = testTraces.operators
+
+        # Use default operators only
+        # if testTraces.operators == None:
+        #     self.listOfOperators = defaultOperators
+        # else:
+        #     self.listOfOperators = testTraces.operators
         
         if 'prop' in self.listOfOperators:
             self.listOfOperators.remove('prop')
-            
+
+        # self.unaryOperators = [op for op in self.listOfOperators if op in unary]
+        # self.binaryOperators = [op for op in self.listOfOperators if op in binary]
         
-        self.unaryOperators = [op for op in self.listOfOperators if op in unary]
-        self.binaryOperators = [op for op in self.listOfOperators if op in binary]
-        
-        #self.noneOperator = 'none' # a none operator is not needed in this encoding
+        # self.noneOperator = 'none' # a none operator is not needed in this encoding
         
         self.solver = Solver()
         
@@ -92,6 +105,9 @@ class DagSATEncoding:
          
         self.operatorsSemantics()
         self.noDanglingVariables()
+
+        # Ensure formulae are syntactically safe
+        self.onlyNegateAtoms()
         
         self.solver.assert_and_track(And( [ self.y[(self.formulaDepth - 1, traceIdx, 0)] for traceIdx in range(len(self.traces.acceptedTraces))] ), 'accepted traces should be accepting')
         self.solver.assert_and_track(And( [ Not(self.y[(self.formulaDepth - 1, traceIdx, 0)]) for traceIdx in range(len(self.traces.acceptedTraces), len(self.traces.acceptedTraces+self.traces.rejectedTraces))] ),\
@@ -114,8 +130,8 @@ class DagSATEncoding:
         
     
     def firstOperatorVariable(self):
-        self.solver.assert_and_track(Or([self.x[k] for k in self.x if k[0] == 0 and k[1] in self.listOfVariables]),\
-                                     'first operator a variable')
+        self.solver.assert_and_track(Or([self.x[k] for k in self.x if k[0] == 0 and k[1] in self.listOfVariables + self.zeroaryOperators]),\
+                                     'first operator a variable or a zeroary operator')
 
     def noDanglingVariables(self):
         if self.formulaDepth > 0:
@@ -159,7 +175,7 @@ class DagSATEncoding:
                                               ]),\
                                               "at most one left operator for binary and unary operators"\
             )
-            
+
             if (self.formulaDepth > 0):
                 self.solver.assert_and_track(And([\
                                                 Implies(
@@ -222,7 +238,7 @@ class DagSATEncoding:
                     Implies(
                         Or(
                             [self.x[(i, op)] for op in
-                             self.listOfVariables]
+                             self.listOfVariables + self.zeroaryOperators]
                         ),
                         Not(
                             Or(
@@ -234,14 +250,34 @@ class DagSATEncoding:
                     )
                     for i in range(1, self.formulaDepth) \
                     ]), \
-                    "no left or right children for variables" \
+                    "no left or right children for variables or zeroary operators" \
                     )
+
+
+    def onlyNegateAtoms(self):
+        self.solver.assert_and_track(And([ \
+            Implies( \
+                self.x[(i, '!')], \
+                Or([ \
+                    And([self.l[(i, leftArg)], Or([self.x[(leftArg, prop)] for prop in self.listOfVariables])]) \
+                for leftArg in range(i)])
+            )\
+            for i in range(self.formulaDepth)
+        ]), "only atomic propositions can be negated")
 
 
     def operatorsSemantics(self):
 
-
         for traceIdx, tr in enumerate(self.traces.acceptedTraces + self.traces.rejectedTraces):
+
+            # For NOT operator we need to start from i=0
+            if '⊥' in self.listOfOperators:
+                for i in range(self.formulaDepth):
+                    self.solver.assert_and_track(Implies(self.x[(i, '⊥')],\
+                        And([ Not(self.y[(i, traceIdx, timestep)]) for timestep in range(tr.lengthOfTrace)])\
+                    ),\
+                    'semantics of false for trace %d and depth %d'%(traceIdx, i))
+
             for i in range(1, self.formulaDepth):
                 
                 if '|' in self.listOfOperators:
@@ -263,6 +299,7 @@ class DagSATEncoding:
                                                                            )\
                                                                           for leftArg in range(i) for rightArg in range(i) ])),\
                                                              'semantics of disjunction for trace %d and depth %d'%(traceIdx, i))
+                
                 if '&' in self.listOfOperators:
                       #conjunction
                      self.solver.assert_and_track(Implies(self.x[(i, '&')],\
@@ -336,24 +373,68 @@ class DagSATEncoding:
                                                            ),\
                                                    'semantics of globally operator for trace %d and depth %d' % (traceIdx, i)\
                                                    )
+                
+                # Parametrized globally
+                d = 0
+                while 'G≤'+str(d) in self.listOfOperators:
+                    operator = 'G≤'+str(d)
+                    self.solver.assert_and_track(Implies(self.x[(i, operator)],\
+                        And([\
+                            Implies(\
+                                self.l[(i,onlyArg)],\
+                                And([\
+                                    self.y[(i, traceIdx, timestep)] ==\
+                                    And([self.y[(onlyArg, traceIdx, futureTimestep)] for futureTimestep in tr.futurePos(timestep)[:d+1]])\
+                                    for timestep in range(tr.lengthOfTrace)\
+                                    ])\
+                                )\
+                            for onlyArg in range(i)\
+                        ])\
+                    ),\
+                    'semantics of parametrized globally(≤%d) operator for trace %d and depth %d' % (d, traceIdx, i)\
+                    )
+                    d += 1
 
-                if 'F' in self.listOfOperators:                  
-                      #finally                
-                     self.solver.assert_and_track(Implies(self.x[(i, 'F')],\
-                                                           And([\
-                                                               Implies(\
-                                                                         self.l[(i,onlyArg)],\
-                                                                         And([\
-                                                                              self.y[(i, traceIdx, timestep)] ==\
-                                                                              Or([self.y[(onlyArg, traceIdx, futureTimestep)] for futureTimestep in tr.futurePos(timestep) ])\
-                                                                              for timestep in range(tr.lengthOfTrace)\
-                                                                              ])\
-                                                                          )\
-                                                               for onlyArg in range(i)\
-                                                               ])\
-                                                           ),\
-                                                   'semantics of finally operator for trace %d and depth %d' % (traceIdx, i)\
-                                                   )
+                d = 0
+                while 'G>'+str(d) in self.listOfOperators:
+                    operator = 'G>'+str(d)
+                    self.solver.assert_and_track(Implies(self.x[(i, operator)],\
+                        And([\
+                            Implies(\
+                                self.l[(i,onlyArg)],\
+                                And([\
+                                    self.y[(i, traceIdx, timestep)] ==\
+                                    And([self.y[(onlyArg, traceIdx, futureTimestep)] for futureTimestep in tr.futurePos(timestep)[d+1:]])\
+                                    for timestep in range(tr.lengthOfTrace)\
+                                    ])\
+                                )\
+                            for onlyArg in range(i)\
+                        ])\
+                    ),\
+                    'semantics of parametrized globally(>%d) operator for trace %d and depth %d' % (d, traceIdx, i)\
+                    )
+                    d += 1
+
+                d = 0
+                while 'F≤'+str(d) in self.listOfOperators:
+                    #parametrized finally
+                    operator = 'F≤'+str(d)
+                    self.solver.assert_and_track(Implies(self.x[(i, operator)],\
+                                                        And([\
+                                                            Implies(\
+                                                                        self.l[(i,onlyArg)],\
+                                                                        And([\
+                                                                            self.y[(i, traceIdx, timestep)] ==\
+                                                                            Or([self.y[(onlyArg, traceIdx, futureTimestep)] for futureTimestep in tr.futurePos(timestep)[:d+1]])\
+                                                                            for timestep in range(tr.lengthOfTrace)\
+                                                                            ])\
+                                                                        )\
+                                                            for onlyArg in range(i)\
+                                                            ])\
+                                                        ),\
+                                                'semantics of parametrized finally≤%d operator for trace %d and depth %d' % (d, traceIdx, i)\
+                                                )
+                    d += 1
                   
                 if 'X' in self.listOfOperators:
                       #next                
@@ -372,27 +453,105 @@ class DagSATEncoding:
                                                            ),\
                                                    'semantics of neXt operator for trace %d and depth %d' % (traceIdx, i)\
                                                    )
-                if 'U' in self.listOfOperators:
-                    #until
-                     self.solver.assert_and_track(Implies(self.x[(i, 'U')],\
-                                                          And([ Implies(\
-                                                                         And(\
-                                                                             [self.l[i, leftArg], self.r[i, rightArg]]\
-                                                                             ),\
-                                                                         And([\
-                                                                            self.y[(i, traceIdx, timestep)] ==\
-                                                                            Or([\
-                                                                                And(\
-                                                                                    [self.y[(leftArg, traceIdx, futurePos)] for futurePos in tr.futurePos(timestep)[0:qIndex]]+\
-                                                                                    [self.y[(rightArg, traceIdx, tr.futurePos(timestep)[qIndex])]]\
-                                                                                    )\
-                                                                                for qIndex in range(len(tr.futurePos(timestep)))\
-                                                                                ])\
-                                                                            for timestep in range(tr.lengthOfTrace)]\
-                                                                             )\
-                                                                         )\
-                                                                for leftArg in range(i) for rightArg in range(i) ])),\
-                                                    'semantics of Until operator for trace %d and depth %d'%(traceIdx, i))
+
+                d = 0
+                while 'U≤'+str(d) in self.listOfOperators:
+                    #parametrized until
+                    operator = 'U≤'+str(d)
+                    self.solver.assert_and_track(Implies(self.x[(i, operator)],\
+                        And([ Implies(\
+                                        And(\
+                                            [self.l[i, leftArg], self.r[i, rightArg]]\
+                                            ),\
+                                        And([\
+                                        self.y[(i, traceIdx, timestep)] ==\
+                                        Or([\
+                                            And(\
+                                                [self.y[(leftArg, traceIdx, futurePos)] for futurePos in tr.futurePos(timestep)[0:qIndex]]+\
+                                                [self.y[(rightArg, traceIdx, tr.futurePos(timestep)[qIndex])]]\
+                                                )\
+                                            for qIndex in range(len(tr.futurePos(timestep))) if qIndex <= d\
+                                            ])\
+                                        for timestep in range(tr.lengthOfTrace)]\
+                                            )\
+                                        )\
+                            for leftArg in range(i) for rightArg in range(i) ])),\
+                        'semantics of parametrized Until≤%d operator for trace %d and depth %d'%(d, traceIdx, i))
+                    d += 1
+                
+                if 'R' in self.listOfOperators:
+                    # release
+                    self.solver.assert_and_track(Implies(self.x[(i, 'R')],\
+                        And([ Implies(\
+                                        And(\
+                                            [self.l[i, leftArg], self.r[i, rightArg]]\
+                                            ),\
+                                        And([\
+                                            self.y[(i, traceIdx, timestep)] ==\
+                                            And([\
+                                                Or([\
+                                                    self.y[(rightArg, traceIdx, tr.futurePos(timestep)[qIndex])],\
+                                                    Or([self.y[(leftArg, traceIdx, futurePos)] for futurePos in tr.futurePos(timestep)[0:qIndex]])\
+                                                ])
+                                                for qIndex in range(len(tr.futurePos(timestep)))\
+                                            ])\
+                                            for timestep in range(tr.lengthOfTrace)\
+                                        ])\
+                                    )\
+                            for leftArg in range(i) for rightArg in range(i) ])),\
+                        'semantics of release operator for trace %d and depth %d'%(traceIdx, i))
+
+                d = 0
+                while 'R≤'+str(d) in self.listOfOperators:
+                    # parametrized release
+                    operator = 'R≤'+str(d)
+                    self.solver.assert_and_track(Implies(self.x[(i, operator)],\
+                        And([ Implies(\
+                                        And(\
+                                            [self.l[i, leftArg], self.r[i, rightArg]]\
+                                            ),\
+                                        And([\
+                                            self.y[(i, traceIdx, timestep)] ==\
+                                            And([\
+                                                Or([\
+                                                    self.y[(rightArg, traceIdx, tr.futurePos(timestep)[qIndex])],\
+                                                    Or([self.y[(leftArg, traceIdx, futurePos)] for futurePos in tr.futurePos(timestep)[0:qIndex]])\
+                                                ])
+                                                for qIndex in range(min(d+1, len(tr.futurePos(timestep))))\
+                                            ])\
+                                            for timestep in range(tr.lengthOfTrace)\
+                                        ])\
+                                    )\
+                            for leftArg in range(i) for rightArg in range(i) ])),\
+                        'semantics of parametrized release≤%d operator for trace %d and depth %d'%(d, traceIdx, i))
+                    d += 1
+
+                d = 0
+                while 'R>'+str(d) in self.listOfOperators:
+                    # parametrized release
+                    operator = 'R>'+str(d)
+                    self.solver.assert_and_track(Implies(self.x[(i, operator)],\
+                        And([ Implies(\
+                                        And(\
+                                            [self.l[i, leftArg], self.r[i, rightArg]]\
+                                            ),\
+                                        And([\
+                                            self.y[(i, traceIdx, timestep)] ==\
+                                            And([\
+                                                Or([\
+                                                    self.y[(rightArg, traceIdx, tr.futurePos(timestep)[qIndex])],\
+                                                    Or([self.y[(leftArg, traceIdx, futurePos)] for futurePos in tr.futurePos(timestep)[0:qIndex]])\
+                                                ])
+                                                for qIndex in range(d+1, len(tr.futurePos(timestep)))\
+                                            ])\
+                                            for timestep in range(tr.lengthOfTrace)\
+                                        ])\
+                                    )\
+                            for leftArg in range(i) for rightArg in range(i) ])),\
+                        'semantics of parametrized release>%d operator for trace %d and depth %d'%(d, traceIdx, i))
+                    d += 1
+
+
     def reconstructWholeFormula(self, model):
         return self.reconstructFormula(self.formulaDepth-1, model)   
         
